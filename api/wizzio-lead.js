@@ -1,93 +1,61 @@
 // api/wizzio-lead.js
-// Petite API Node pour pousser un lead dans Wizzio
 
 const crypto = require('crypto');
 
 module.exports = async (req, res) => {
-  // CORS : on autorise tous les domaines pour simplifier
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  // -------- CORS (autoriser l'appel depuis ton site Webflow) ----------
+  res.setHeader('Access-Control-Allow-Origin', 'https://www.perenitis.fr'); // ou "*" en test
+  res.setHeader('Access-Control-Allow-Methods', 'POST,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
   }
 
+  // -------------------------------------------------------------------
   if (req.method !== 'POST') {
-    return res
-      .status(405)
-      .json({ state: 9, message: 'Method not allowed' });
+    return res.status(405).json({ state: 9, message: 'Method not allowed' });
   }
 
   try {
-    // Récupération du body JSON
-    let body = req.body;
-    if (!body || typeof body === 'string') {
-      try {
-        body = JSON.parse(body || '{}');
-      } catch (e) {
-        body = {};
-      }
-    }
-
     const apiKey = process.env.WIZZIO_API_KEY;
     const apiSecret = process.env.WIZZIO_API_SECRET;
 
     if (!apiKey || !apiSecret) {
       return res
         .status(500)
-        .json({ state: 9, message: 'API credentials not configured' });
+        .json({ state: 9, message: 'Missing Wizzio API credentials' });
     }
 
-    // Génération de l’auth Wizzio
-    const datetime = new Date().toISOString().replace('Z', '');
+    const lead = req.body;
+
+    // Date au format proche du "Y-m-d H:i:s" attendu
+    const now = new Date();
+    const pad = n => String(n).padStart(2, '0');
+    const datetime =
+      now.getFullYear() +
+      '-' +
+      pad(now.getMonth() + 1) +
+      '-' +
+      pad(now.getDate()) +
+      ' ' +
+      pad(now.getHours()) +
+      ':' +
+      pad(now.getMinutes()) +
+      ':' +
+      pad(now.getSeconds());
+
+    // Signature HMAC comme dans la doc Wizzio
     const messageBytes = (apiSecret + apiKey + datetime).toLowerCase();
     const secretBytes = apiSecret.toLowerCase();
-
-    const signature = crypto
-      .createHmac('sha1', secretBytes)
-      .update(messageBytes)
-      .digest('hex');
-
+    const hmac = crypto.createHmac('sha1', secretBytes);
+    hmac.update(messageBytes);
+    const signature = hmac.digest();
     const authorization =
       'WAP:' + apiKey + ':' + Buffer.from(signature).toString('base64');
 
-    // Construction du lead exactement selon ta doc
-    const lead = {
-      civilite: body.civilite ?? 0,
-      nom: body.nom || '',
-      prenom: body.prenom || '',
-      adresse: body.adresse || '',
-      codePostal: body.codePostal || '',
-      ville: body.ville || '',
-      telephone1: body.telephone1 || '',
-      telephone2: body.telephone2 || '',
-      email: body.email || '',
-      typeLogement: body.typeLogement ?? 0,
-      situationFam: body.situationFam ?? 0,
-      nbEnfants: body.nbEnfants ?? 0,
-      anneeNaissance: body.anneeNaissance ?? null,
-      revenus: body.revenus ?? 0,
-      charges: body.charges ?? 0,
-      impots: body.impots ?? 0,
-      capital: body.capital ?? 0,
-      epargne: body.epargne ?? 0,
-      domaine: body.domaine ?? 500,
-      complementsInfo: body.complementsInfo || '',
-      credits: body.credits ?? 0,
-      ndCredits: body.ndCredits ?? 0,
-      creditMensualites: body.creditMensualites ?? 0,
-      creditsConso: body.creditsConso ?? 0,
-      nbCreditsConso: body.nbCreditsConso ?? 0,
-      creditConsoMensualites: body.creditConsoMensualites ?? 0,
-      creditBesoinTreso: body.creditBesoinTreso ?? 0,
-      optin: body.optin ?? 1,
-      dateRdv: body.dateRdv || null,
-      heureRdv: body.heureRdv || null
-    };
-
-    // Appel Wizzio
-    const response = await fetch('https://api.wizio.fr/v1/PushLead/push', {
+    // Appel à l’API Wizzio PushLead
+    const wizzioRes = await fetch('https://api.wizio.fr/v1/PushLead/push', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -98,20 +66,20 @@ module.exports = async (req, res) => {
       body: JSON.stringify(lead)
     });
 
-    const data = await response.json().catch(() => null);
+    const data = await wizzioRes.json().catch(() => null);
 
-    if (!response.ok || !data || data.state !== 1) {
-      console.error('Erreur Wizzio', data);
+    if (!wizzioRes.ok || !data) {
       return res
         .status(500)
-        .json(data || { state: 9, message: 'Importation Lead Error' });
+        .json({ state: 9, message: 'Importation Lead Error', raw: data });
     }
 
+    // On renvoie tel quel la réponse Wizzio au front
     return res.status(200).json(data);
   } catch (err) {
-    console.error(err);
+    console.error('Erreur serveur wizzio-lead:', err);
     return res
       .status(500)
-      .json({ state: 9, message: 'Importation Lead Error', error: String(err) });
+      .json({ state: 9, message: 'Server error', error: String(err) });
   }
 };
