@@ -71,6 +71,8 @@ module.exports = async (req, res) => {
       dateRdv: lead.dateRdv || null,
       heureRdv: lead.heureRdv || null
     };
+    
+    console.log('Lead envoyé à Wizzio :', JSON.stringify(wizzioLead));
 
     // 2) Date au format "Y-m-d H:i:s.u"
     const now = new Date();
