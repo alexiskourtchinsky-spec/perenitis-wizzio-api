@@ -12,7 +12,6 @@ module.exports = async (req, res) => {
     return res.status(200).end();
   }
 
-  // On ne veut que du POST ici
   if (req.method !== 'POST') {
     return res.status(405).json({ state: 9, message: 'Method not allowed' });
   }
@@ -29,7 +28,51 @@ module.exports = async (req, res) => {
 
     const lead = req.body || {};
 
-    // -------- Date au format "Y-m-d H:i:s.u" (comme dans la doc PHP)  ----------
+    // 1) On construit un lead AU FORMAT DE LEUR EXEMPLE PHP
+    const wizzioLead = {
+      civilite: Number(lead.civilite) || 0,
+      nom: lead.nom || '',
+      prenom: lead.prenom || '',
+      adresse: lead.adresse || '',
+      codePostal: lead.codePostal || '',
+      ville: lead.ville || '',
+      telephone1: lead.telephone1 || '',
+      telephone2: lead.telephone2 || '',
+      email: lead.email || '',
+      typeLogement: Number(lead.typeLogement) || 0,
+      situationFam: Number(lead.situationFam) || 0,
+      nbEnfants: Number(lead.nbEnfants) || 0,
+      anneeNaissance: lead.anneeNaissance
+        ? Number(lead.anneeNaissance)
+        : null,
+      revenus: Number(lead.revenus) || 0,
+      charges: Number(lead.charges) || 0,
+      impots: Number(lead.impots) || 0,
+      capital: Number(lead.capital) || 0,
+      epargne: Number(lead.epargne) || 0,
+      domaine: Number(lead.domaine) || 500,
+
+      // ⚠️ Leur doc est incohérente : "complementsInfo" vs "complementsInfos"
+      // On suit leur EXEMPLE PHP : "complementsInfos"
+      complementsInfos: lead.complementsInfo || '',
+
+      credits: Number(lead.credits) || 0,
+
+      // ⚠️ doc = "ndCredits", exemple PHP = "nbCredits"
+      // On suit l'exemple : "nbCredits"
+      nbCredits: Number(lead.ndCredits || lead.nbCredits) || 0,
+
+      creditMensualites: Number(lead.creditMensualites) || 0,
+      creditsConso: Number(lead.creditsConso) || 0,
+      nbCreditsConso: Number(lead.nbCreditsConso) || 0,
+      creditConsoMensualites: Number(lead.creditConsoMensualites) || 0,
+      creditBesoinTreso: Number(lead.creditBesoinTreso) || 0,
+      optin: Number(lead.optin) || 0,
+      dateRdv: lead.dateRdv || null,
+      heureRdv: lead.heureRdv || null
+    };
+
+    // 2) Date au format "Y-m-d H:i:s.u"
     const now = new Date();
     const pad2 = n => String(n).padStart(2, '0');
     const pad6 = n => String(n).padStart(6, '0'); // microsecondes
@@ -49,7 +92,7 @@ module.exports = async (req, res) => {
       '.' +
       pad6(now.getMilliseconds() * 1000); // ms -> µs
 
-    // -------- Signature HMAC SHA1 comme dans la doc ----------
+    // 3) Signature HMAC SHA1 (comme leur doc PHP)
     const messageBytes = (apiSecret + apiKey + datetime).toLowerCase();
     const secretBytes = apiSecret.toLowerCase();
 
@@ -59,19 +102,19 @@ module.exports = async (req, res) => {
     const authorization =
       'WAP:' + apiKey + ':' + Buffer.from(signature).toString('base64');
 
-    // -------- Appel Wizzio PushLead ----------
+    // 4) Appel à l’API Wizzio
     const wizzioRes = await fetch('https://api.wizio.fr/v1/PushLead/push', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Api-Key': apiKey,
-        'DateTime': datetime,
-        'Authorization': authorization
+        DateTime: datetime,
+        Authorization: authorization
       },
-      body: JSON.stringify(lead)
+      body: JSON.stringify(wizzioLead)
     });
 
-    const text = await wizzioRes.text(); // on lit le texte une seule fois
+    const text = await wizzioRes.text();
     let data;
     try {
       data = JSON.parse(text);
@@ -79,11 +122,9 @@ module.exports = async (req, res) => {
       data = null;
     }
 
-    // Logs pour debug (tu les verras dans Vercel > Logs)
     console.log('Wizzio status:', wizzioRes.status);
     console.log('Wizzio raw body:', text);
 
-    // Si Wizzio renvoie un code HTTP d’erreur ou du JSON non valide :
     if (!wizzioRes.ok || !data) {
       return res.status(200).json({
         state: 9,
@@ -93,7 +134,6 @@ module.exports = async (req, res) => {
       });
     }
 
-    // OK : on renvoie tel quel la réponse Wizzio
     return res.status(200).json(data);
   } catch (err) {
     console.error('Erreur serveur wizzio-lead:', err);
