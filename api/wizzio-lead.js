@@ -1,9 +1,8 @@
 // api/wizzio-lead.js
-
 const crypto = require('crypto');
 
 module.exports = async (req, res) => {
-  // -------- CORS pour Webflow ----------
+  // CORS large pour ton site Webflow
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -28,36 +27,26 @@ module.exports = async (req, res) => {
 
     const lead = req.body || {};
 
-    // ---- Vérification des champs obligatoires côté Wizzio ----
-    const missing = [];
-    if (!lead.nom) missing.push('nom');
-    if (!lead.email) missing.push('email');
-    if (!lead.telephone1) missing.push('telephone1');
+    // 1) Construction du payload Wizio avec SEULEMENT les champs souhaités
+    const complementsInfo = lead.complementsInfo || '';
 
-    if (missing.length > 0) {
-      return res.status(200).json({
-        state: 9,
-        message: 'Missing required lead fields: ' + missing.join(', ')
-      });
-    }
-
-    // On nettoie le téléphone pour garder seulement les chiffres
-    const phoneDigits = String(lead.telephone1).replace(/\D/g, '');
-
-    // ---- Lead MINIMAL selon ta sélection de la doc ----
     const wizzioLead = {
-      nom: String(lead.nom || ''),
-      prenom: String(lead.prenom || ''),
-      email: String(lead.email || ''),
-      telephone1: Number(phoneDigits),         // Int
-      revenus: lead.revenus != null ? Number(lead.revenus) : null, // Float
-      impots: lead.impots != null ? Number(lead.impots) : null,   // Float
-      complementsInfo: String(lead.complementsInfo || '')
+      civilite: 0, // M. par défaut
+      nom: lead.nom || '',
+      prenom: lead.prenom || '',
+      telephone1: lead.telephone1 || '',
+      email: lead.email || '',
+      revenus: Number(lead.revenus) || 0,
+      impots: Number(lead.impots) || 0,
+      domaine: 500, // défiscalisation
+      // On envoie les deux variantes à cause de leur doc incohérente
+      complementsInfo,
+      complementsInfos: complementsInfo
     };
 
     console.log('Lead envoyé à Wizzio :', JSON.stringify(wizzioLead));
 
-    // ---- 2) Date au format "Y-m-d H:i:s.u" ----
+    // 2) Datetime au format "Y-m-d H:i:s.u" (YYYY-MM-DD HH:MM:SS.MICROS)
     const now = new Date();
     const pad2 = n => String(n).padStart(2, '0');
     const pad6 = n => String(n).padStart(6, '0'); // microsecondes
@@ -77,17 +66,19 @@ module.exports = async (req, res) => {
       '.' +
       pad6(now.getMilliseconds() * 1000); // ms -> µs
 
-    // ---- 3) Signature HMAC SHA1 ----
+    // 3) Signature HMAC SHA1 comme dans leur EXEMPLE PHP
     const messageBytes = (apiSecret + apiKey + datetime).toLowerCase();
     const secretBytes = apiSecret.toLowerCase();
 
-    const hmac = crypto.createHmac('sha1', secretBytes);
-    hmac.update(messageBytes);
-    const signature = hmac.digest();
-    const authorization =
-      'WAP:' + apiKey + ':' + Buffer.from(signature).toString('base64');
+    const signatureHex = crypto
+      .createHmac('sha1', secretBytes)
+      .update(messageBytes)
+      .digest('hex'); // ⇐ hexadécimal, comme hash_hmac en PHP
 
-    // ---- 4) Appel à l’API Wizzio ----
+    const authorization =
+      'WAP:' + apiKey + ':' + Buffer.from(signatureHex, 'utf8').toString('base64');
+
+    // 4) Appel à l’API Wizio
     const wizzioRes = await fetch('https://api.wizio.fr/v1/PushLead/push', {
       method: 'POST',
       headers: {
@@ -103,7 +94,7 @@ module.exports = async (req, res) => {
     let data;
     try {
       data = JSON.parse(text);
-    } catch (e) {
+    } catch {
       data = null;
     }
 
