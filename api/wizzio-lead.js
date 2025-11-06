@@ -3,8 +3,8 @@
 const crypto = require('crypto');
 
 module.exports = async (req, res) => {
-  // -------- CORS (autoriser l'appel depuis ton site Webflow) ----------
-  res.setHeader('Access-Control-Allow-Origin', 'https://www.perenitis.fr'); // ou "*" en test
+  // -------- CORS : on ouvre largement en test ----------
+  res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
@@ -12,7 +12,7 @@ module.exports = async (req, res) => {
     return res.status(200).end();
   }
 
-  // -------------------------------------------------------------------
+  // On ne veut que du POST ici
   if (req.method !== 'POST') {
     return res.status(405).json({ state: 9, message: 'Method not allowed' });
   }
@@ -23,38 +23,43 @@ module.exports = async (req, res) => {
 
     if (!apiKey || !apiSecret) {
       return res
-        .status(500)
+        .status(200)
         .json({ state: 9, message: 'Missing Wizzio API credentials' });
     }
 
-    const lead = req.body;
+    const lead = req.body || {};
 
-    // Date au format proche du "Y-m-d H:i:s" attendu
+    // -------- Date au format "Y-m-d H:i:s.u" (comme dans la doc PHP)  ----------
     const now = new Date();
-    const pad = n => String(n).padStart(2, '0');
+    const pad2 = n => String(n).padStart(2, '0');
+    const pad6 = n => String(n).padStart(6, '0'); // microsecondes
+
     const datetime =
       now.getFullYear() +
       '-' +
-      pad(now.getMonth() + 1) +
+      pad2(now.getMonth() + 1) +
       '-' +
-      pad(now.getDate()) +
+      pad2(now.getDate()) +
       ' ' +
-      pad(now.getHours()) +
+      pad2(now.getHours()) +
       ':' +
-      pad(now.getMinutes()) +
+      pad2(now.getMinutes()) +
       ':' +
-      pad(now.getSeconds());
+      pad2(now.getSeconds()) +
+      '.' +
+      pad6(now.getMilliseconds() * 1000); // ms -> µs
 
-    // Signature HMAC comme dans la doc Wizzio
+    // -------- Signature HMAC SHA1 comme dans la doc ----------
     const messageBytes = (apiSecret + apiKey + datetime).toLowerCase();
     const secretBytes = apiSecret.toLowerCase();
+
     const hmac = crypto.createHmac('sha1', secretBytes);
     hmac.update(messageBytes);
     const signature = hmac.digest();
     const authorization =
       'WAP:' + apiKey + ':' + Buffer.from(signature).toString('base64');
 
-    // Appel à l’API Wizzio PushLead
+    // -------- Appel Wizzio PushLead ----------
     const wizzioRes = await fetch('https://api.wizio.fr/v1/PushLead/push', {
       method: 'POST',
       headers: {
@@ -66,20 +71,36 @@ module.exports = async (req, res) => {
       body: JSON.stringify(lead)
     });
 
-    const data = await wizzioRes.json().catch(() => null);
-
-    if (!wizzioRes.ok || !data) {
-      return res
-        .status(500)
-        .json({ state: 9, message: 'Importation Lead Error', raw: data });
+    const text = await wizzioRes.text(); // on lit le texte une seule fois
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch (e) {
+      data = null;
     }
 
-    // On renvoie tel quel la réponse Wizzio au front
+    // Logs pour debug (tu les verras dans Vercel > Logs)
+    console.log('Wizzio status:', wizzioRes.status);
+    console.log('Wizzio raw body:', text);
+
+    // Si Wizzio renvoie un code HTTP d’erreur ou du JSON non valide :
+    if (!wizzioRes.ok || !data) {
+      return res.status(200).json({
+        state: 9,
+        message: 'Importation Lead Error',
+        status: wizzioRes.status,
+        raw: text
+      });
+    }
+
+    // OK : on renvoie tel quel la réponse Wizzio
     return res.status(200).json(data);
   } catch (err) {
     console.error('Erreur serveur wizzio-lead:', err);
-    return res
-      .status(500)
-      .json({ state: 9, message: 'Server error', error: String(err) });
+    return res.status(200).json({
+      state: 9,
+      message: 'Server error',
+      error: String(err)
+    });
   }
 };
