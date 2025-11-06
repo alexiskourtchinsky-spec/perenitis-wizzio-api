@@ -3,7 +3,7 @@
 const crypto = require('crypto');
 
 module.exports = async (req, res) => {
-  // -------- CORS : on ouvre largement (test) ----------
+  // -------- CORS pour Webflow ----------
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -28,59 +28,56 @@ module.exports = async (req, res) => {
 
     const lead = req.body || {};
 
-    // 1) Lead Wizzio avec LES NOMS EXACTS de ta doc
+    // ---- Vérification des champs obligatoires côté Wizzio ----
+    const missing = [];
+    if (!lead.nom) missing.push('nom');
+    if (!lead.email) missing.push('email');
+    if (!lead.telephone1) missing.push('telephone1');
+
+    if (missing.length > 0) {
+      return res.status(200).json({
+        state: 9,
+        message: 'Missing required lead fields: ' + missing.join(', ')
+      });
+    }
+
+    // On nettoie le téléphone pour garder seulement les chiffres
+    const phoneDigits = String(lead.telephone1).replace(/\D/g, '');
+
+    // ---- Lead MINIMAL selon ta sélection de la doc ----
     const wizzioLead = {
-      civilite: Number(lead.civilite) || 0,
-      nom: lead.nom || '',
-      prenom: lead.prenom || '',
-      adresse: lead.adresse || '',
-      codePostal: lead.codePostal || '',
-      ville: lead.ville || '',
-      telephone1: lead.telephone1 || '',
-      telephone2: lead.telephone2 || '',
-      email: lead.email || '',
-      typeLogement: Number(lead.typeLogement) || 0,
-      situationFam: Number(lead.situationFam) || 0,
-      nbEnfants: Number(lead.nbEnfants) || 0,
-      anneeNaissance: lead.anneeNaissance ? Number(lead.anneeNaissance) : null,
-      revenus: Number(lead.revenus) || 0,
-      charges: Number(lead.charges) || 0,
-      impots: Number(lead.impots) || 0,
-      capital: Number(lead.capital) || 0,
-      epargne: Number(lead.epargne) || 0,
-      domaine: Number(lead.domaine) || 500,
-      // ⚠️ doc = complementsInfo
-      complementsInfo: lead.complementsInfo || '',
-      credits: Number(lead.credits) || 0,
-      // ⚠️ doc = ndCredits
-      ndCredits: Number(lead.ndCredits) || 0,
-      creditMensualites: Number(lead.creditMensualites) || 0,
-      creditsConso: Number(lead.creditsConso) || 0,
-      nbCreditsConso: Number(lead.nbCreditsConso) || 0,
-      creditConsoMensualites: Number(lead.creditConsoMensualites) || 0,
-      creditBesoinTreso: Number(lead.creditBesoinTreso) || 0,
-      optin: Number(lead.optin) || 0,
-      dateRdv: lead.dateRdv || null,
-      heureRdv: lead.heureRdv || null
+      nom: String(lead.nom || ''),
+      prenom: String(lead.prenom || ''),
+      email: String(lead.email || ''),
+      telephone1: Number(phoneDigits),         // Int
+      revenus: lead.revenus != null ? Number(lead.revenus) : null, // Float
+      impots: lead.impots != null ? Number(lead.impots) : null,   // Float
+      complementsInfo: String(lead.complementsInfo || '')
     };
 
     console.log('Lead envoyé à Wizzio :', JSON.stringify(wizzioLead));
 
-    // 2) Date au format "Y-m-d H:i:s.u"
+    // ---- 2) Date au format "Y-m-d H:i:s.u" ----
     const now = new Date();
     const pad2 = n => String(n).padStart(2, '0');
     const pad6 = n => String(n).padStart(6, '0'); // microsecondes
 
     const datetime =
       now.getFullYear() +
-      '-' + pad2(now.getMonth() + 1) +
-      '-' + pad2(now.getDate()) +
-      ' ' + pad2(now.getHours()) +
-      ':' + pad2(now.getMinutes()) +
-      ':' + pad2(now.getSeconds()) +
-      '.' + pad6(now.getMilliseconds() * 1000); // ms -> µs
+      '-' +
+      pad2(now.getMonth() + 1) +
+      '-' +
+      pad2(now.getDate()) +
+      ' ' +
+      pad2(now.getHours()) +
+      ':' +
+      pad2(now.getMinutes()) +
+      ':' +
+      pad2(now.getSeconds()) +
+      '.' +
+      pad6(now.getMilliseconds() * 1000); // ms -> µs
 
-    // 3) Signature HMAC SHA1
+    // ---- 3) Signature HMAC SHA1 ----
     const messageBytes = (apiSecret + apiKey + datetime).toLowerCase();
     const secretBytes = apiSecret.toLowerCase();
 
@@ -90,7 +87,7 @@ module.exports = async (req, res) => {
     const authorization =
       'WAP:' + apiKey + ':' + Buffer.from(signature).toString('base64');
 
-    // 4) Appel à l’API Wizzio
+    // ---- 4) Appel à l’API Wizzio ----
     const wizzioRes = await fetch('https://api.wizio.fr/v1/PushLead/push', {
       method: 'POST',
       headers: {
@@ -122,7 +119,6 @@ module.exports = async (req, res) => {
       });
     }
 
-    // Si tout va bien, Wizzio doit renvoyer un state = 1
     return res.status(200).json(data);
   } catch (err) {
     console.error('Erreur serveur wizzio-lead:', err);
