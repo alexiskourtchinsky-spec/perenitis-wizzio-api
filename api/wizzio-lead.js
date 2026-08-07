@@ -29,7 +29,6 @@ module.exports = async (req, res) => {
 
     // 1) Construction du payload Wizio avec SEULEMENT les champs souhaités
     const complementsInfo = lead.complementsInfo || '';
-
     const wizzioLead = {
       civilite: 0, // M. par défaut
       nom: lead.nom || '',
@@ -46,11 +45,60 @@ module.exports = async (req, res) => {
 
     console.log('Lead envoyé à Wizzio :', JSON.stringify(wizzioLead));
 
+    // ==== NOUVEAU : Push en parallèle vers le CRM Kyia ====
+    // On ne bloque pas la réponse au client si Kyia échoue.
+    (async () => {
+      try {
+        const kyiaApiKey = process.env.CRM_API_KEY;
+        const kyiaUrl = process.env.CRM_IMPORT_URL;
+
+        if (!kyiaApiKey || !kyiaUrl) {
+          console.warn('Kyia: variables d\'environnement manquantes, envoi ignoré');
+          return;
+        }
+
+        const kyiaPayload = [
+          {
+            first_name: lead.prenom || '',
+            last_name: lead.nom || '',
+            email: lead.email || undefined,
+            phone: lead.telephone1 || undefined,
+            status: 'lead',
+            type: 'per',
+            notes: complementsInfo || undefined,
+            consent_sms: true,
+            consent_email: true
+          }
+        ];
+
+        const kyiaRes = await fetch(kyiaUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-API-Key': kyiaApiKey
+          },
+          body: JSON.stringify(kyiaPayload)
+        });
+
+        const kyiaText = await kyiaRes.text();
+        console.log('Kyia status:', kyiaRes.status);
+        console.log('Kyia raw body:', kyiaText);
+
+        if (kyiaRes.status === 207) {
+          console.warn('Kyia: succès partiel, voir errors dans la réponse');
+        } else if (!kyiaRes.ok) {
+          console.error('Kyia: échec de l\'import', kyiaRes.status, kyiaText);
+        }
+      } catch (kyiaErr) {
+        console.error('Erreur réseau vers Kyia:', kyiaErr);
+      }
+    })();
+    // ==== FIN NOUVEAU ====
+
     // 2) Datetime au format "Y-m-d H:i:s.u" (YYYY-MM-DD HH:MM:SS.MICROS)
     const now = new Date();
     const pad2 = n => String(n).padStart(2, '0');
     const pad6 = n => String(n).padStart(6, '0'); // microsecondes
-
     const datetime =
       now.getFullYear() +
       '-' +
@@ -69,7 +117,6 @@ module.exports = async (req, res) => {
     // 3) Signature HMAC SHA1 comme dans leur EXEMPLE PHP
     const messageBytes = (apiSecret + apiKey + datetime).toLowerCase();
     const secretBytes = apiSecret.toLowerCase();
-
     const signatureHex = crypto
       .createHmac('sha1', secretBytes)
       .update(messageBytes)
@@ -78,7 +125,7 @@ module.exports = async (req, res) => {
     const authorization =
       'WAP:' + apiKey + ':' + Buffer.from(signatureHex, 'utf8').toString('base64');
 
-    // 4) Appel à l’API Wizio
+    // 4) Appel à l'API Wizio
     const wizzioRes = await fetch('https://api.wizio.fr/v1/PushLead/push', {
       method: 'POST',
       headers: {
