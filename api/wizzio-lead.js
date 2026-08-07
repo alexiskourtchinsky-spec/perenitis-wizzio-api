@@ -45,19 +45,19 @@ module.exports = async (req, res) => {
 
     console.log('Lead envoyé à Wizzio :', JSON.stringify(wizzioLead));
 
-    // ==== NOUVEAU : Push en parallèle vers le CRM Kyia ====
-    // On ne bloque pas la réponse au client si Kyia échoue.
+    // ==== NOUVEAU : Push en parallèle vers le CRM Finomea ====
+    // On ne bloque pas la réponse au client si Finomea échoue.
     (async () => {
       try {
-        const kyiaApiKey = process.env.CRM_API_KEY;
-        const kyiaUrl = process.env.CRM_IMPORT_URL;
+        const finomeaApiKey = process.env.FINOMEA_API_KEY;
+        const finomeaUrl = process.env.FINOMEA_IMPORT_URL;
 
-        if (!kyiaApiKey || !kyiaUrl) {
-          console.warn('Kyia: variables d\'environnement manquantes, envoi ignoré');
+        if (!finomeaApiKey || !finomeaUrl) {
+          console.warn('Finomea: variables d\'environnement manquantes, envoi ignoré');
           return;
         }
 
-        const kyiaPayload = [
+        const finomeaPayload = [
           {
             first_name: lead.prenom || '',
             last_name: lead.nom || '',
@@ -71,26 +71,26 @@ module.exports = async (req, res) => {
           }
         ];
 
-        const kyiaRes = await fetch(kyiaUrl, {
+        const finomeaRes = await fetch(finomeaUrl, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'X-API-Key': kyiaApiKey
+            'X-API-Key': finomeaApiKey
           },
-          body: JSON.stringify(kyiaPayload)
+          body: JSON.stringify(finomeaPayload)
         });
 
-        const kyiaText = await kyiaRes.text();
-        console.log('Kyia status:', kyiaRes.status);
-        console.log('Kyia raw body:', kyiaText);
+        const finomeaText = await finomeaRes.text();
+        console.log('Finomea status:', finomeaRes.status);
+        console.log('Finomea raw body:', finomeaText);
 
-        if (kyiaRes.status === 207) {
-          console.warn('Kyia: succès partiel, voir errors dans la réponse');
-        } else if (!kyiaRes.ok) {
-          console.error('Kyia: échec de l\'import', kyiaRes.status, kyiaText);
+        if (finomeaRes.status === 207) {
+          console.warn('Finomea: succès partiel, voir errors dans la réponse');
+        } else if (!finomeaRes.ok) {
+          console.error('Finomea: échec de l\'import', finomeaRes.status, finomeaText);
         }
-      } catch (kyiaErr) {
-        console.error('Erreur réseau vers Kyia:', kyiaErr);
+      } catch (finomeaErr) {
+        console.error('Erreur réseau vers Finomea:', finomeaErr);
       }
     })();
     // ==== FIN NOUVEAU ====
