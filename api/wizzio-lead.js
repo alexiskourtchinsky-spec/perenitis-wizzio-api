@@ -1,6 +1,53 @@
 // api/wizzio-lead.js
 const crypto = require('crypto');
 
+async function pushToFinomea(lead, complementsInfo) {
+  try {
+    const finomeaApiKey = process.env.FINOMEA_API_KEY;
+    const finomeaUrl = process.env.FINOMEA_IMPORT_URL;
+
+    if (!finomeaApiKey || !finomeaUrl) {
+      console.warn('Finomea: variables d\'environnement manquantes, envoi ignoré');
+      return;
+    }
+
+    const finomeaPayload = [
+      {
+        first_name: lead.prenom || '',
+        last_name: lead.nom || '',
+        email: lead.email || undefined,
+        phone: lead.telephone1 || undefined,
+        status: 'lead',
+        type: 'per',
+        notes: complementsInfo || undefined,
+        consent_sms: true,
+        consent_email: true
+      }
+    ];
+
+    const finomeaRes = await fetch(finomeaUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-Key': finomeaApiKey
+      },
+      body: JSON.stringify(finomeaPayload)
+    });
+
+    const finomeaText = await finomeaRes.text();
+    console.log('Finomea status:', finomeaRes.status);
+    console.log('Finomea raw body:', finomeaText);
+
+    if (finomeaRes.status === 207) {
+      console.warn('Finomea: succès partiel, voir errors dans la réponse');
+    } else if (!finomeaRes.ok) {
+      console.error('Finomea: échec de l\'import', finomeaRes.status, finomeaText);
+    }
+  } catch (finomeaErr) {
+    console.error('Erreur réseau vers Finomea:', finomeaErr);
+  }
+}
+
 module.exports = async (req, res) => {
   // CORS large pour ton site Webflow
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -43,60 +90,6 @@ module.exports = async (req, res) => {
     };
 
     console.log('Lead envoyé à Wizzio :', JSON.stringify(wizzioLead));
-
-    // ==== NOUVEAU : Push en parallèle vers le CRM Finomea ====
-    (async () => {
-      try {
-        const finomeaApiKey = process.env.FINOMEA_API_KEY;
-        const finomeaUrl = process.env.FINOMEA_IMPORT_URL;
-
-        if (!finomeaApiKey || !finomeaUrl) {
-          console.warn('Finomea: variables d\'environnement manquantes, envoi ignoré');
-          return;
-        }
-
-        console.log('Finomea DEBUG - longueur clé:', finomeaApiKey.length);
-        console.log('Finomea DEBUG - premiers caractères:', finomeaApiKey.slice(0, 4));
-        console.log('Finomea DEBUG - derniers caractères:', finomeaApiKey.slice(-4));
-        console.log('Finomea DEBUG - url:', finomeaUrl);
-
-        const finomeaPayload = [
-          {
-            first_name: lead.prenom || '',
-            last_name: lead.nom || '',
-            email: lead.email || undefined,
-            phone: lead.telephone1 || undefined,
-            status: 'lead',
-            type: 'per',
-            notes: complementsInfo || undefined,
-            consent_sms: true,
-            consent_email: true
-          }
-        ];
-
-        const finomeaRes = await fetch(finomeaUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-API-Key': finomeaApiKey
-          },
-          body: JSON.stringify(finomeaPayload)
-        });
-
-        const finomeaText = await finomeaRes.text();
-        console.log('Finomea status:', finomeaRes.status);
-        console.log('Finomea raw body:', finomeaText);
-
-        if (finomeaRes.status === 207) {
-          console.warn('Finomea: succès partiel, voir errors dans la réponse');
-        } else if (!finomeaRes.ok) {
-          console.error('Finomea: échec de l\'import', finomeaRes.status, finomeaText);
-        }
-      } catch (finomeaErr) {
-        console.error('Erreur réseau vers Finomea:', finomeaErr);
-      }
-    })();
-    // ==== FIN NOUVEAU ====
 
     // 2) Datetime au format "Y-m-d H:i:s.u" (YYYY-MM-DD HH:MM:SS.MICROS)
     const now = new Date();
@@ -150,6 +143,9 @@ module.exports = async (req, res) => {
 
     console.log('Wizzio status:', wizzioRes.status);
     console.log('Wizzio raw body:', text);
+
+    // 5) Push vers Finomea, ATTENDU avant de répondre (sinon Vercel coupe la fonction trop tôt)
+    await pushToFinomea(lead, complementsInfo);
 
     if (!wizzioRes.ok || !data) {
       return res.status(200).json({
