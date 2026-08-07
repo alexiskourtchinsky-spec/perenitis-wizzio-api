@@ -38,7 +38,6 @@ module.exports = async (req, res) => {
       revenus: Number(lead.revenus) || 0,
       impots: Number(lead.impots) || 0,
       domaine: 500, // défiscalisation
-      // On envoie les deux variantes à cause de leur doc incohérente
       complementsInfo,
       complementsInfos: complementsInfo
     };
@@ -46,7 +45,6 @@ module.exports = async (req, res) => {
     console.log('Lead envoyé à Wizzio :', JSON.stringify(wizzioLead));
 
     // ==== NOUVEAU : Push en parallèle vers le CRM Finomea ====
-    // On ne bloque pas la réponse au client si Finomea échoue.
     (async () => {
       try {
         const finomeaApiKey = process.env.FINOMEA_API_KEY;
@@ -57,7 +55,6 @@ module.exports = async (req, res) => {
           return;
         }
 
-        // DEBUG TEMPORAIRE - à retirer une fois le problème résolu
         console.log('Finomea DEBUG - longueur clé:', finomeaApiKey.length);
         console.log('Finomea DEBUG - premiers caractères:', finomeaApiKey.slice(0, 4));
         console.log('Finomea DEBUG - derniers caractères:', finomeaApiKey.slice(-4));
@@ -98,3 +95,78 @@ module.exports = async (req, res) => {
       } catch (finomeaErr) {
         console.error('Erreur réseau vers Finomea:', finomeaErr);
       }
+    })();
+    // ==== FIN NOUVEAU ====
+
+    // 2) Datetime au format "Y-m-d H:i:s.u" (YYYY-MM-DD HH:MM:SS.MICROS)
+    const now = new Date();
+    const pad2 = n => String(n).padStart(2, '0');
+    const pad6 = n => String(n).padStart(6, '0'); // microsecondes
+    const datetime =
+      now.getFullYear() +
+      '-' +
+      pad2(now.getMonth() + 1) +
+      '-' +
+      pad2(now.getDate()) +
+      ' ' +
+      pad2(now.getHours()) +
+      ':' +
+      pad2(now.getMinutes()) +
+      ':' +
+      pad2(now.getSeconds()) +
+      '.' +
+      pad6(now.getMilliseconds() * 1000); // ms -> µs
+
+    // 3) Signature HMAC SHA1 comme dans leur EXEMPLE PHP
+    const messageBytes = (apiSecret + apiKey + datetime).toLowerCase();
+    const secretBytes = apiSecret.toLowerCase();
+    const signatureHex = crypto
+      .createHmac('sha1', secretBytes)
+      .update(messageBytes)
+      .digest('hex');
+
+    const authorization =
+      'WAP:' + apiKey + ':' + Buffer.from(signatureHex, 'utf8').toString('base64');
+
+    // 4) Appel à l'API Wizio
+    const wizzioRes = await fetch('https://api.wizio.fr/v1/PushLead/push', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Api-Key': apiKey,
+        DateTime: datetime,
+        Authorization: authorization
+      },
+      body: JSON.stringify(wizzioLead)
+    });
+
+    const text = await wizzioRes.text();
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = null;
+    }
+
+    console.log('Wizzio status:', wizzioRes.status);
+    console.log('Wizzio raw body:', text);
+
+    if (!wizzioRes.ok || !data) {
+      return res.status(200).json({
+        state: 9,
+        message: 'Importation Lead Error',
+        status: wizzioRes.status,
+        raw: text
+      });
+    }
+
+    return res.status(200).json(data);
+  } catch (err) {
+    console.error('Erreur serveur wizzio-lead:', err);
+    return res.status(200).json({
+      state: 9,
+      message: 'Server error',
+      error: String(err)
+    });
+  }
+};
