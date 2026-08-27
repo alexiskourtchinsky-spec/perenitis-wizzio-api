@@ -30,7 +30,6 @@ async function pushToFinomea(lead, complementsInfo) {
       headers: {
         'Content-Type': 'application/json',
         'X-API-Key': finomeaApiKey,
-        'Accept-Encoding': 'identity'
       },
       body: JSON.stringify(finomeaPayload)
     });
