@@ -18,11 +18,13 @@ const PRODUCT_BY_GOAL = {
 // Catégorie par défaut selon la LP, si l'objectif ne suffit pas
 const PRODUCT_BY_SOURCE = {
   lp_per: 'per',
+  lp_av: 'av',
   comparateur: 'per',
   comparateur_gate: 'per'
 };
 const SOURCE_LABEL = {
   lp_per: 'LP Étude PER',
+  lp_av: 'LP Assurance vie',
   lp_impots: 'LP Réduction d\'impôt',
   comparateur: 'Comparateur PER (demande produit)',
   comparateur_gate: 'Comparateur PER (accès aux offres)',
@@ -175,6 +177,7 @@ function buildFinomeaRow(lead, complementsInfo) {
     dealNotes.push(`Source : ${SOURCE_LABEL[source] || source || 'Site'}`);
     if (crm.goal_label) dealNotes.push(`Objectif : ${crm.goal_label}`);
     if (crm.product) dealNotes.push(`Produit demandé : ${crm.product}`);
+    if (crm.amount_label) dealNotes.push(`Montant à placer : ${crm.amount_label}`);
     if (crm.activity_label) dealNotes.push(`Activité : ${crm.activity_label}`);
     if (income) dealNotes.push(`Revenu annuel déclaré : ${eur(income)}`);
     if (tax) dealNotes.push(`Impôt payé déclaré : ${eur(tax)}`);
