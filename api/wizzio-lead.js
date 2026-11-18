@@ -1,56 +1,255 @@
 // api/wizzio-lead.js
-const crypto = require('crypto');
+// Les leads partent uniquement vers Finomea (Wizzio retiré).
+// Le nom du fichier et l'URL restent identiques pour ne pas casser les LP.
 
-async function pushToFinomea(lead, complementsInfo) {
-  try {
-    const finomeaApiKey = process.env.FINOMEA_API_KEY;
-    const finomeaUrl = process.env.FINOMEA_IMPORT_URL;
+// =====================================================================
+// FINOMEA : correspondances formulaires -> champs CRM
+// =====================================================================
 
-    if (!finomeaApiKey || !finomeaUrl) {
-      console.warn('Finomea: variables d\'environnement manquantes, envoi ignoré');
-      return;
-    }
+// Catégorie de produit selon l'objectif choisi (codes envoyés par les LP)
+const PRODUCT_BY_GOAL = {
+  retraite: 'per',
+  impots: 'per',
+  transfert: 'per',
+  plafonds: 'per',
+  immobilier: 'direct_real_estate',
+  epargne: 'av'
+};
+// Catégorie par défaut selon la LP, si l'objectif ne suffit pas
+const PRODUCT_BY_SOURCE = {
+  lp_per: 'per',
+  comparateur: 'per',
+  comparateur_gate: 'per'
+};
+const SOURCE_LABEL = {
+  lp_per: 'LP Étude PER',
+  lp_impots: 'LP Réduction d\'impôt',
+  comparateur: 'Comparateur PER (demande produit)',
+  comparateur_gate: 'Comparateur PER (accès aux offres)',
+  simulateur: 'Simulateur projet'
+};
 
-    const finomeaPayload = [
-      {
-        first_name: lead.prenom || '',
-        last_name: lead.nom || '',
-        email: lead.email || undefined,
-        // Toujours envoyé en string à Finomea (leur backend appelle .lstrip() dessus,
-        // ce qui plante si c'est un nombre)
-        phone: lead.telephone1 != null ? String(lead.telephone1) : undefined,
-        status: 'lead',
-        type: 'per',
-        notes: complementsInfo || undefined,
-        consent_sms: true,
-        consent_email: true
-      }
-    ];
+// Activité -> statut professionnel CRM
+const ACTIVITY = {
+  salarie: { professional_status: 'employee' },
+  salarie_ou_fonctionnaire: { professional_status: 'employee' },
+  cadre: { professional_status: 'employee', csp_code: 'csp_cadre' },
+  fonctionnaire: { professional_status: 'civil_servant' },
+  liberal: { professional_status: 'self_employed' },
+  independant: { professional_status: 'self_employed' },
+  chef_entreprise: { professional_status: 'self_employed', is_business_owner: true },
+  entrepreneur: { professional_status: 'self_employed', is_business_owner: true },
+  retraite: { professional_status: 'retired', csp_code: 'csp_retraite' },
+  sans_activite: { professional_status: 'other', csp_code: 'csp_autre_sans_activite' },
+  sans: { professional_status: 'other', csp_code: 'csp_autre_sans_activite' }
+};
 
-    const finomeaRes = await fetch(finomeaUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-API-Key': finomeaApiKey,
-        'Accept-Encoding': 'identity'
-      },
-      body: JSON.stringify(finomeaPayload)
-    });
-
-    const finomeaText = await finomeaRes.text();
-    console.log('Finomea status:', finomeaRes.status);
-    console.log('Finomea raw body:', finomeaText);
-
-    if (finomeaRes.status === 207) {
-      console.warn('Finomea: succès partiel, voir errors dans la réponse');
-    } else if (!finomeaRes.ok) {
-      console.error('Finomea: échec de l\'import', finomeaRes.status, finomeaText);
-    }
-  } catch (finomeaErr) {
-    console.error('Erreur réseau vers Finomea:', finomeaErr);
-  }
+function toNum(v) {
+  const n = parseFloat(String(v == null ? '' : v).replace(/[\s  €]/g, '').replace(',', '.'));
+  return isFinite(n) && n > 0 ? n : null;
+}
+function eur(n) {
+  return Math.round(n).toLocaleString('fr-FR').replace(/[  ]/g, ' ') + ' €';
 }
 
+// ---------- Ancien format : tout est dans complementsInfo ----------
+// Gère les 2 variantes en circulation :
+//   "UTM: utm_source=google | utm_medium=cpc"  (LP impôts, LP PER, comparateur)
+//   "... || UTM: {"utm_source":"google"}"       (simulateur)
+function parseLegacy(complementsInfo) {
+  const ci = String(complementsInfo || '');
+  const utm = {};
+  let goalLine = '';
+
+  ci.split('\n').forEach(line => {
+    if (line.startsWith('UTM:') && !line.includes('{')) {
+      line.slice(4).split('|').forEach(part => {
+        const i = part.indexOf('=');
+        if (i > 0) utm[part.slice(0, i).trim()] = part.slice(i + 1).trim();
+      });
+    } else if (line.startsWith('LP:')) {
+      utm.landing_url = line.slice(3).trim();
+    } else if (line.startsWith('Objectif:')) {
+      goalLine = line.slice(9).trim();
+    }
+  });
+
+  const json = ci.match(/UTM:\s*(\{[^}]*\})/);
+  if (json) {
+    try { Object.assign(utm, JSON.parse(json[1])); } catch (e) {}
+  }
+
+  if (utm.landing_url) {
+    try {
+      const url = new URL(utm.landing_url);
+      ['gclid', 'gbraid', 'wbraid'].forEach(k => {
+        if (!utm.gclid && url.searchParams.get(k)) utm.gclid = url.searchParams.get(k);
+      });
+      ['utm_source', 'utm_medium', 'utm_campaign'].forEach(k => {
+        if (!utm[k] && url.searchParams.get(k)) utm[k] = url.searchParams.get(k);
+      });
+    } catch (e) {}
+  }
+
+  // Objectif -> code, à partir du libellé
+  const projet = (ci.match(/Projet:\s*([^|\n]+)/) || [])[1] || '';
+  const g = (goalLine + ' ' + projet).toLowerCase();
+  let goal = '';
+  if (/immobili|pierre/.test(g)) goal = 'immobilier';
+  else if (/retraite|per\b/.test(g)) goal = 'retraite';
+  else if (/imp[oô]t/.test(g)) goal = 'impots';
+  else if (/fructifier|[ée]pargn/.test(g)) goal = 'epargne';
+
+  return { utm, goal };
+}
+
+function isGoogleAds(utm) {
+  if (utm.gclid) return true;
+  return /google/i.test(utm.utm_source || '') && /(cpc|ppc|paid|sem)/i.test(utm.utm_medium || '');
+}
+
+// ---------- Construction de la ligne Finomea ----------
+function buildFinomeaRow(lead, complementsInfo) {
+  const crm = lead.crm && typeof lead.crm === 'object' ? lead.crm : null;
+  const legacy = parseLegacy(complementsInfo);
+  const utm = { ...legacy.utm, ...((crm && crm.utm) || {}) };
+  const source = (crm && crm.source) || '';
+  const goal = (crm && crm.goal) || legacy.goal;
+
+  const phoneRaw = String(lead.telephone1 || '').trim();
+  const phoneDigits = phoneRaw.replace(/\D/g, '');
+
+  const row = {
+    first_name: (lead.prenom || '').trim(),
+    last_name: (lead.nom || '').trim(),
+    email: lead.email || undefined,
+    // Toujours en string (leur backend appelle .lstrip() dessus) ; "0" = vide côté LP
+    // Le "+" est conservé (+33…, +262…), sinon Finomea ne reconnaît pas l'indicatif
+    phone: phoneDigits.length >= 9 ? (phoneRaw.startsWith('+') ? '+' : '') + phoneDigits : undefined,
+    campaign: utm.utm_campaign || undefined,
+    product_category: PRODUCT_BY_GOAL[goal] || PRODUCT_BY_SOURCE[source] || undefined,
+    consent_prospecting: !(crm && crm.consent === false)
+  };
+
+  const dealNotes = [];
+  const clientNotes = [];
+
+  if (crm) {
+    // --- Nouveau format structuré ---
+    const act = ACTIVITY[crm.activity];
+    if (act) Object.assign(row, act);
+
+    const income = toNum(crm.income_annual);
+    const tax = toNum(crm.tax_paid);
+    const monthly = toNum(crm.monthly_saving);
+    if (monthly) row.monthly_savings_capacity = monthly;
+    if (income) row.income_comments = `Revenu annuel déclaré : ${eur(income)}`;
+    if (tax) row.tax_comments = `Impôt payé déclaré : ${eur(tax)}`;
+
+    if (crm.age_range) clientNotes.push(`Âge : ${crm.age_range}`);
+    if (crm.birth_year) clientNotes.push(`Année de naissance : ${crm.birth_year}`);
+    if (crm.marital) clientNotes.push(`Situation familiale : ${crm.marital}`);
+    if (crm.children_count !== undefined && crm.children_count !== '') {
+      clientNotes.push(`Enfants à charge : ${crm.children_count}`);
+    }
+
+    dealNotes.push(`Source : ${SOURCE_LABEL[source] || source || 'Site'}`);
+    if (crm.goal_label) dealNotes.push(`Objectif : ${crm.goal_label}`);
+    if (crm.product) dealNotes.push(`Produit demandé : ${crm.product}`);
+    if (crm.activity_label) dealNotes.push(`Activité : ${crm.activity_label}`);
+    if (income) dealNotes.push(`Revenu annuel déclaré : ${eur(income)}`);
+    if (tax) dealNotes.push(`Impôt payé déclaré : ${eur(tax)}`);
+    if (monthly) dealNotes.push(`Épargne mensuelle disponible : ${eur(monthly)}`);
+    const initial = toNum(crm.initial_invest);
+    if (initial) dealNotes.push(`Versement initial envisagé : ${eur(initial)}`);
+    if (crm.horizon_years) dealNotes.push(`Horizon : ${crm.horizon_years} ans`);
+    if (crm.credit_years) dealNotes.push(`Durée de crédit souhaitée : ${crm.credit_years} ans`);
+    const down = toNum(crm.down_payment);
+    if (down) dealNotes.push(`Apport : ${eur(down)}`);
+    if (crm.simulation) dealNotes.push(`Simulation : ${crm.simulation}`);
+  } else {
+    // --- Ancien format : on garde le texte tel quel ---
+    if (complementsInfo) dealNotes.push(complementsInfo);
+    if (Number(lead.revenus)) dealNotes.push(`Revenus déclarés : ${eur(Number(lead.revenus))}`);
+    if (Number(lead.impots)) dealNotes.push(`Impôt déclaré : ${eur(Number(lead.impots))}`);
+  }
+
+  // Attribution, toujours en fin de notes d'affaire
+  if (crm) {
+    const parts = ['partner', 'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content', 'gclid']
+      .filter(k => utm[k]).map(k => `${k}=${utm[k]}`);
+    if (parts.length) dealNotes.push(`UTM : ${parts.join(' | ')}`);
+    if (utm.landing_url) dealNotes.push(`LP : ${utm.landing_url}`);
+    if (utm.referrer) dealNotes.push(`Ref : ${utm.referrer}`);
+  }
+
+  if (dealNotes.length) row.deal_notes = dealNotes.join('\n');
+  if (clientNotes.length) row.notes = clientNotes.join('\n');
+
+  return { row, fromGoogleAds: isGoogleAds(utm) };
+}
+
+async function sendToFinomea(row, apiKey, url) {
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-API-Key': apiKey,
+      'Accept-Encoding': 'identity'
+    },
+    body: JSON.stringify([row])
+  });
+  const text = await r.text();
+  let data = null;
+  try { data = JSON.parse(text); } catch (e) {}
+  console.log('Finomea status:', r.status, '| body:', text);
+  const errors = (data && data.errors) || [];
+  const ok = r.ok && data && errors.length === 0;
+  return { ok, status: r.status, data, errors };
+}
+
+// Renvoie { state: 1 } si le lead est bien dans Finomea (format attendu par les LP)
+async function pushToFinomea(lead, complementsInfo) {
+  const finomeaUrl = process.env.FINOMEA_IMPORT_URL;
+  const { row, fromGoogleAds } = buildFinomeaRow(lead, complementsInfo);
+
+  const apiKey = fromGoogleAds
+    ? process.env.FINOMEA_KEY_GOOGLE_ADS || process.env.FINOMEA_API_KEY
+    : process.env.FINOMEA_API_KEY;
+
+  if (!apiKey || !finomeaUrl) {
+    console.error('Finomea: variables d\'environnement manquantes');
+    return { state: 9, message: 'Configuration serveur incomplète' };
+  }
+
+  console.log(
+    'Finomea origine:', fromGoogleAds ? 'Google Ads' : 'Site',
+    '| campaign:', row.campaign || '(vide)',
+    '| format:', lead.crm ? 'structuré' : 'ancien'
+  );
+  console.log('Finomea payload:', JSON.stringify(row));
+
+  let result = await sendToFinomea(row, apiKey, finomeaUrl);
+
+  // Téléphone refusé par Finomea : on renvoie sans le champ phone (gardé en notes)
+  // plutôt que de perdre le lead
+  if (!result.ok && row.phone && /phone|t[ée]l[ée]phone/i.test(JSON.stringify(result.errors))) {
+    console.warn('Finomea: téléphone refusé, nouvel essai sans le champ phone');
+    const retryRow = { ...row, deal_notes: [row.deal_notes, `Téléphone saisi (refusé par le CRM) : ${row.phone}`].filter(Boolean).join('\n') };
+    delete retryRow.phone;
+    result = await sendToFinomea(retryRow, apiKey, finomeaUrl);
+  }
+
+  if (result.ok) {
+    return { state: 1, message: 'OK', finomea: result.data };
+  }
+  console.error('Finomea: échec de l\'import', result.status, JSON.stringify(result.errors));
+  return { state: 9, message: 'Importation Lead Error' };
+}
+
+// =====================================================================
+// HANDLER
+// =====================================================================
 module.exports = async (req, res) => {
   // CORS large pour ton site Webflow
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -60,113 +259,18 @@ module.exports = async (req, res) => {
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
   }
-
   if (req.method !== 'POST') {
     return res.status(405).json({ state: 9, message: 'Method not allowed' });
   }
 
   try {
-    const apiKey = process.env.WIZZIO_API_KEY;
-    const apiSecret = process.env.WIZZIO_API_SECRET;
-
-    if (!apiKey || !apiSecret) {
-      return res
-        .status(200)
-        .json({ state: 9, message: 'Missing Wizzio API credentials' });
-    }
-
     const lead = req.body || {};
-
-    // 1) Construction du payload Wizio avec SEULEMENT les champs souhaités
-    const complementsInfo = lead.complementsInfo || '';
-    const wizzioLead = {
-      civilite: 0, // M. par défaut
-      nom: lead.nom || '',
-      prenom: lead.prenom || '',
-      telephone1: lead.telephone1 || '',
-      email: lead.email || '',
-      revenus: Number(lead.revenus) || 0,
-      impots: Number(lead.impots) || 0,
-      domaine: 500, // défiscalisation
-      // On envoie les deux variantes à cause de leur doc incohérente
-      complementsInfo,
-      complementsInfos: complementsInfo
-    };
-
-    console.log('Lead envoyé à Wizzio :', JSON.stringify(wizzioLead));
-
-    // 2) Datetime au format "Y-m-d H:i:s.u" (YYYY-MM-DD HH:MM:SS.MICROS)
-    const now = new Date();
-    const pad2 = n => String(n).padStart(2, '0');
-    const pad6 = n => String(n).padStart(6, '0'); // microsecondes
-    const datetime =
-      now.getFullYear() +
-      '-' +
-      pad2(now.getMonth() + 1) +
-      '-' +
-      pad2(now.getDate()) +
-      ' ' +
-      pad2(now.getHours()) +
-      ':' +
-      pad2(now.getMinutes()) +
-      ':' +
-      pad2(now.getSeconds()) +
-      '.' +
-      pad6(now.getMilliseconds() * 1000); // ms -> µs
-
-    // 3) Signature HMAC SHA1 comme dans leur EXEMPLE PHP
-    const messageBytes = (apiSecret + apiKey + datetime).toLowerCase();
-    const secretBytes = apiSecret.toLowerCase();
-    const signatureHex = crypto
-      .createHmac('sha1', secretBytes)
-      .update(messageBytes)
-      .digest('hex'); // ⇐ hexadécimal, comme hash_hmac en PHP
-
-    const authorization =
-      'WAP:' + apiKey + ':' + Buffer.from(signatureHex, 'utf8').toString('base64');
-
-    // 4) Appel à l'API Wizio
-    const wizzioRes = await fetch('https://api.wizio.fr/v1/PushLead/push', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Api-Key': apiKey,
-        DateTime: datetime,
-        Authorization: authorization
-      },
-      body: JSON.stringify(wizzioLead)
-    });
-
-    const text = await wizzioRes.text();
-    let data;
-    try {
-      data = JSON.parse(text);
-    } catch {
-      data = null;
-    }
-
-    console.log('Wizzio status:', wizzioRes.status);
-    console.log('Wizzio raw body:', text);
-
-    // 5) Push vers Finomea, ATTENDU avant de répondre (sinon Vercel coupe la fonction trop tôt)
-    await pushToFinomea(lead, complementsInfo);
-
-    if (!wizzioRes.ok || !data) {
-      return res.status(200).json({
-        state: 9,
-        message: 'Importation Lead Error',
-        status: wizzioRes.status,
-        raw: text
-      });
-    }
-
-    return res.status(200).json(data);
+    const result = await pushToFinomea(lead, lead.complementsInfo || '');
+    return res.status(200).json(result);
   } catch (err) {
     console.error('Erreur serveur wizzio-lead:', err);
-    return res.status(200).json({
-      state: 9,
-      message: 'Server error',
-      error: String(err)
-    });
+    return res.status(200).json({ state: 9, message: 'Server error' });
   }
 };
+
+module.exports.buildFinomeaRow = buildFinomeaRow;
