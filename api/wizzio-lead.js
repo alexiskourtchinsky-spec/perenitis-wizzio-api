@@ -103,9 +103,25 @@ function parseLegacy(complementsInfo) {
   return { utm, goal };
 }
 
-function isGoogleAds(utm) {
-  if (utm.gclid) return true;
-  return /google/i.test(utm.utm_source || '') && /(cpc|ppc|paid|sem)/i.test(utm.utm_medium || '');
+// Origine CRM = clé API utilisée. Une ligne par canal payant.
+// Si la variable d'environnement d'un canal n'existe pas encore dans Vercel,
+// le lead part avec la clé du site (rien ne casse).
+const CHANNELS = [
+  {
+    name: 'Google Ads',
+    envKey: 'FINOMEA_KEY_GOOGLE_ADS',
+    match: utm => !!utm.gclid || /^(google|google_ads|googleads|adwords)$/i.test((utm.utm_source || '').trim())
+  },
+  {
+    name: 'Meta Ads',
+    envKey: 'FINOMEA_KEY_META',
+    // fbclid seul ne suffit pas : Facebook l'ajoute aussi sur les posts gratuits
+    match: utm => /^(facebook|fb|instagram|ig|meta|facebook_ads|meta_ads)$/i.test((utm.utm_source || '').trim())
+  }
+];
+
+function detectChannel(utm) {
+  return CHANNELS.find(c => c.match(utm)) || null;
 }
 
 // ---------- Construction de la ligne Finomea ----------
@@ -186,7 +202,7 @@ function buildFinomeaRow(lead, complementsInfo) {
   if (dealNotes.length) row.deal_notes = dealNotes.join('\n');
   if (clientNotes.length) row.notes = clientNotes.join('\n');
 
-  return { row, fromGoogleAds: isGoogleAds(utm) };
+  return { row, channel: detectChannel(utm) };
 }
 
 async function sendToFinomea(row, apiKey, url) {
@@ -211,11 +227,14 @@ async function sendToFinomea(row, apiKey, url) {
 // Renvoie { state: 1 } si le lead est bien dans Finomea (format attendu par les LP)
 async function pushToFinomea(lead, complementsInfo) {
   const finomeaUrl = process.env.FINOMEA_IMPORT_URL;
-  const { row, fromGoogleAds } = buildFinomeaRow(lead, complementsInfo);
+  const { row, channel } = buildFinomeaRow(lead, complementsInfo);
 
-  const apiKey = fromGoogleAds
-    ? process.env.FINOMEA_KEY_GOOGLE_ADS || process.env.FINOMEA_API_KEY
-    : process.env.FINOMEA_API_KEY;
+  const channelKey = channel && process.env[channel.envKey];
+  const apiKey = channelKey || process.env.FINOMEA_API_KEY;
+  const originName = channelKey ? channel.name : 'Site';
+  if (channel && !channelKey) {
+    console.warn(`Finomea: ${channel.envKey} absente dans Vercel, lead ${channel.name} envoyé avec la clé du site`);
+  }
 
   if (!apiKey || !finomeaUrl) {
     console.error('Finomea: variables d\'environnement manquantes');
@@ -223,7 +242,7 @@ async function pushToFinomea(lead, complementsInfo) {
   }
 
   console.log(
-    'Finomea origine:', fromGoogleAds ? 'Google Ads' : 'Site',
+    'Finomea origine:', originName,
     '| campaign:', row.campaign || '(vide)',
     '| format:', lead.crm ? 'structuré' : 'ancien'
   );
