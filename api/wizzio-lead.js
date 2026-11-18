@@ -41,7 +41,9 @@ const ACTIVITY = {
   entrepreneur: { professional_status: 'self_employed', is_business_owner: true },
   retraite: { professional_status: 'retired', csp_code: 'csp_retraite' },
   sans_activite: { professional_status: 'other', csp_code: 'csp_autre_sans_activite' },
-  sans: { professional_status: 'other', csp_code: 'csp_autre_sans_activite' }
+  sans: { professional_status: 'other', csp_code: 'csp_autre_sans_activite' },
+  demandeur_emploi: { professional_status: 'unemployed' },
+  etudiant: { professional_status: 'student' }
 };
 
 function toNum(v) {
@@ -163,6 +165,7 @@ function buildFinomeaRow(lead, complementsInfo) {
     if (tax) row.tax_comments = `Impôt payé déclaré : ${eur(tax)}`;
 
     if (crm.age_range) clientNotes.push(`Âge : ${crm.age_range}`);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(crm.birth_date || '')) row.birth_date = crm.birth_date;
     if (crm.birth_year) clientNotes.push(`Année de naissance : ${crm.birth_year}`);
     if (crm.marital) clientNotes.push(`Situation familiale : ${crm.marital}`);
     if (crm.children_count !== undefined && crm.children_count !== '') {
