@@ -28,7 +28,8 @@ const SOURCE_LABEL = {
   lp_impots: 'LP Réduction d\'impôt',
   comparateur: 'Comparateur PER (demande produit)',
   comparateur_gate: 'Comparateur PER (accès aux offres)',
-  simulateur: 'Simulateur projet'
+  simulateur: 'Simulateur projet',
+  parrainage: 'Parrainage'
 };
 
 // Activité -> statut professionnel CRM
@@ -99,7 +100,7 @@ function parseLegacy(complementsInfo) {
   const projet = (ci.match(/Projet:\s*([^|\n]+)/) || [])[1] || '';
   const g = (goalLine + ' ' + projet).toLowerCase();
   let goal = '';
-  if (/immobili|pierre/.test(g)) goal = 'immobilier';
+  if (/immobili|dans la pierre/.test(g)) goal = 'immobilier';
   else if (/retraite|per\b/.test(g)) goal = 'retraite';
   else if (/imp[oô]t/.test(g)) goal = 'impots';
   else if (/fructifier|[ée]pargn/.test(g)) goal = 'epargne';
@@ -124,8 +125,13 @@ const CHANNELS = [
   }
 ];
 
-function detectChannel(utm) {
-  return CHANNELS.find(c => c.match(utm)) || null;
+// Canaux définis par la page elle-même (prioritaires sur les UTM)
+const SOURCE_CHANNELS = {
+  parrainage: { name: 'Parrainage', envKey: 'FINOMEA_KEY_PARRAINAGE' }
+};
+
+function detectChannel(utm, source) {
+  return SOURCE_CHANNELS[source] || CHANNELS.find(c => c.match(utm)) || null;
 }
 
 // ---------- Construction de la ligne Finomea ----------
@@ -134,7 +140,8 @@ function buildFinomeaRow(lead, complementsInfo) {
   const legacy = parseLegacy(complementsInfo);
   const utm = { ...legacy.utm, ...((crm && crm.utm) || {}) };
   const source = (crm && crm.source) || '';
-  const goal = (crm && crm.goal) || legacy.goal;
+  // Format structuré : on ne devine jamais l'objectif à partir du texte
+  const goal = crm ? (crm.goal || '') : legacy.goal;
 
   const phoneRaw = String(lead.telephone1 || '').trim();
   const phoneDigits = phoneRaw.replace(/\D/g, '');
@@ -189,6 +196,14 @@ function buildFinomeaRow(lead, complementsInfo) {
     const down = toNum(crm.down_payment);
     if (down) dealNotes.push(`Apport : ${eur(down)}`);
     if (crm.simulation) dealNotes.push(`Simulation : ${crm.simulation}`);
+    if (crm.sponsor && (crm.sponsor.firstname || crm.sponsor.lastname)) {
+      const sp = crm.sponsor;
+      const who = [sp.firstname, sp.lastname].filter(Boolean).join(' ');
+      const contact = [sp.email, sp.phone].filter(Boolean).join(' · ');
+      dealNotes.push(`Recommandé par : ${who}${contact ? ' (' + contact + ')' : ''}`);
+      dealNotes.push('Offre parrainage : 100 € pour le parrain et le filleul après souscription');
+      clientNotes.push(`Parrainé par ${who}${sp.email ? ' (' + sp.email + ')' : ''}`);
+    }
   } else {
     // --- Ancien format : on garde le texte tel quel ---
     if (complementsInfo) dealNotes.push(complementsInfo);
@@ -208,7 +223,7 @@ function buildFinomeaRow(lead, complementsInfo) {
   if (dealNotes.length) row.deal_notes = dealNotes.join('\n');
   if (clientNotes.length) row.notes = clientNotes.join('\n');
 
-  return { row, channel: detectChannel(utm) };
+  return { row, channel: detectChannel(utm, source) };
 }
 
 async function sendToFinomea(row, apiKey, url) {
